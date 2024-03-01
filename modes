@@ -1,0 +1,113 @@
+import requests
+import pandas as pd
+import sqlite3
+import logging
+import time
+from datetime import datetime
+from backoff import on_exception, expo
+from ratelimit import limits, sleep_and_retry
+from requests.exceptions import RequestException
+
+# Logging setup
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Constants
+API_KEY = 'your_api_key'
+ORGANIZATIONAL_ID = 'your_organizational_id'
+DATABASE_PATH = 'linkedin_data.db'
+
+# Headers for API requests
+def get_headers():
+    return {"Authorization": f"Bearer {API_KEY}"}
+
+# Database connection
+def get_db_connection():
+    conn = sqlite3.connect(DATABASE_PATH)
+    return conn
+def setup_database():
+    """Initializes the database tables if they do not exist."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS posts (
+            post_id TEXT PRIMARY KEY,
+            author_id TEXT,
+            author_name TEXT,
+            content TEXT,
+            publish_date DATETIME
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reactions (
+            reaction_id TEXT PRIMARY KEY,
+            post_id TEXT,
+            actor_id TEXT,
+            reaction_type TEXT,
+            reaction_date DATETIME,
+            FOREIGN KEY (post_id) REFERENCES posts (post_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+@sleep_and_retry
+@limits(calls=10, period=60)
+@on_exception(expo, RequestException, max_tries=8)
+def robust_request(url):
+    """Sends a request to the URL with retries and rate limiting."""
+    response = requests.get(url, headers=get_headers())
+    if response.status_code != 200:
+        raise RequestException(f"API request failed with status code {response.status_code}")
+    return response.json()
+
+def fetch_posts():
+    """Fetches posts from the LinkedIn page, with retries for robustness."""
+    url = f"https://api.linkedin.com/v2/organizationalEntityShares?q=organizationalEntity&organizationalEntity=urn:li:organization:{ORGANIZATIONAL_ID}"
+    data = robust_request(url)
+    posts = data.get('elements', [])
+    process_posts(posts)
+
+def process_posts(posts):
+    """Processes and stores the posts in the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for post in posts:
+        post_id = post['activity']
+        # Example of expanded data fetching
+        author_id = post.get('author', {}).get('id', 'Unknown')
+        author_name = post.get('author', {}).get('name', 'Unknown')
+        content = post.get('text', {}).get('content', 'No Content')
+        publish_date = datetime.now()  # Placeholder for actual publish date
+        cursor.execute('INSERT OR IGNORE INTO posts (post_id, author_id, author_name, content, publish_date) VALUES (?, ?, ?, ?, ?)',
+                       (post_id, author_id, author_name, content, publish_date))
+    conn.commit()
+    conn.close()
+    logging.info("Processed and stored posts data.")
+
+def run_interactive_mode():
+    """Runs the program in an interactive mode for immediate execution."""
+    logging.info("Running in interactive mode...")
+    setup_database()
+    fetch_posts()
+    # Additional functions like fetch_reactions() would also be called here
+    logging.info("Interactive mode execution completed.")
+
+def run_scheduled_mode(interval=3600):
+    """Runs the program in a scheduled mode, executing fetch operations periodically."""
+    logging.info("Running in scheduled mode...")
+    setup_database()
+    while True:
+        fetch_posts()
+        # Additional scheduled tasks would go here
+        logging.info(f"Waiting for the next interval... ({interval} seconds)")
+        time.sleep(interval)
+
+if __name__ == "__main__":
+    mode = input("Select mode (interactive/scheduled): ").strip().lower()
+    if mode == 'interactive':
+        run_interactive_mode()
+    elif mode == 'scheduled':
+        interval = int(input("Enter the scheduled interval in seconds: "))
+        run_scheduled_mode(interval=interval)
+    else:
+        logging.error("Invalid mode selected. Please choose 'interactive' or 'scheduled'.")
