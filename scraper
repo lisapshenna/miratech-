@@ -1,0 +1,110 @@
+import requests
+import pandas as pd
+import time
+from datetime import datetime
+
+# Constants
+API_KEY = 'your_api_key'
+ORGANIZATIONAL_ID = 'your_organizational_id'
+RECORD_FILE = 'last_processed_data.txt'
+
+# Setup headers
+def get_headers():
+    """Prepare headers for API requests."""
+    return {"Authorization": f"Bearer {API_KEY}"}
+
+# Read/Write last processed identifiers
+def get_last_processed_info():
+    """Reads the last processed post and reaction identifiers."""
+    try:
+        with open(RECORD_FILE, 'r') as file:
+            data = file.read().split(',')
+            return {'last_post_id': data[0], 'last_reaction_id': data[1]}
+    except FileNotFoundError:
+        return {'last_post_id': None, 'last_reaction_id': None}
+
+def save_last_processed_info(last_post_id, last_reaction_id):
+    """Saves the last processed post and reaction identifiers for continuity."""
+    with open(RECORD_FILE, 'w') as file:
+        file.write(f"{last_post_id},{last_reaction_id}")
+
+# API Calls
+def fetch_posts():
+    """Fetches posts from the LinkedIn page."""
+    url = f"https://api.linkedin.com/v2/organizationalEntityShares?q=organizationalEntity&organizationalEntity=urn:li:organization:{ORGANIZATIONAL_ID}"
+    posts = requests.get(url, headers=get_headers()).json().get('elements', [])
+    return posts
+
+def fetch_reactions_for_post(post_urn):
+    """Fetches reactions for a specific post."""
+    url = f"https://api.linkedin.com/v2/reactions?shareUrn={post_urn}"
+    reactions = requests.get(url, headers=get_headers()).json().get('elements', [])
+    return reactions
+
+def fetch_network_updates(last_post_id):
+    """Fetches network updates for new activities on posts."""
+    url = f"https://api.linkedin.com/v2/networkUpdates?types=SHAR&start=0&count=10&after={last_post_id}"
+    updates = requests.get(url, headers=get_headers()).json().get('values', [])
+    return updates
+
+def fetch_share_statistics(post_urn):
+    """Fetches share statistics for a specific post."""
+    url = f"https://api.linkedin.com/v2/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=urn:li:organization:{ORGANIZATIONAL_ID}&shares[0]={post_urn}"
+    statistics = requests.get(url, headers=get_headers()).json().get('elements', [])
+    return statistics
+
+def fetch_notifications_for_old_posts():
+    """Fetches new reactions from the notifications stream for old posts."""
+    # This is a hypothetical endpoint as LinkedIn API does not directly support this.
+    # Would likely involve fetching notifications and filtering for reactions to posts.
+    return []
+
+# Data Processing
+def process_data(posts):
+    """Processes posts, fetching reactions, updates, and statistics."""
+    last_post_id, last_reaction_id = get_last_processed_info().values()
+    reactions_data = []
+
+    for post in posts:
+        post_urn = post['activity']
+        reactions = fetch_reactions_for_post(post_urn)
+        for reaction in reactions:
+            reactions_data.append({
+                'Post ID': post_urn,
+                'Reaction ID': reaction['id'],
+                'Actor': reaction['actor'],  # Placeholder; typically requires resolution to a name
+                'Reaction Type': reaction['reactionType'],
+                'Date and Time': datetime.now().isoformat(),  # Placeholder for demonstration
+            })
+        # Optionally fetch and process network updates and share statistics here
+        # Example: updates = fetch_network_updates(post_urn)
+        # Example: statistics = fetch_share_statistics(post_urn)
+
+    # Update the last processed identifiers
+    if reactions_data:
+        save_last_processed_info(reactions_data[-1]['Post ID'], reactions_data[-1]['Reaction ID'])
+
+    return pd.DataFrame(reactions_data)
+
+# Main Execution
+def main():
+    posts = fetch_posts()
+    if posts:
+        reactions_df = process_data(posts)
+        print(reactions_df)
+        # Optionally, save reactions_df to a CSV or database
+    else:
+        print("No new posts to process.")
+
+    # Periodic checks for new reactions on old posts (hypothetical functionality)
+    new_reactions = fetch_notifications_for_old_posts()
+    if new_reactions:
+        # Process and update records with new reactions
+        pass
+
+    print("Waiting for new activities...")
+    time.sleep(3600)  # Adjust as necessary
+
+if __name__ == "__main__":
+    while True:
+        main()
